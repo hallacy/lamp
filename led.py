@@ -2,7 +2,6 @@
 import datetime
 import random
 import time
-from time import localtime, strftime
 
 import dropbox
 import fire
@@ -169,10 +168,12 @@ class LED:
 
 
 def write_to_log(f, timestamp, value):
-    print(
-        f"Light Changed: {timestamp}\t{value}\t{strftime('%a, %d %b %Y %H:%M:%S', localtime())}"
+    # All times are pacific
+    dateinfo = datetime.datetime.fromtimestamp(timestamp).strftime(
+        "%A, %d. %B %Y %I:%M%p"
     )
-    f.write(f"{timestamp}\t{value}\t{strftime('%a, %d %b %Y %H:%M:%S', localtime())}")
+    print(f"Light Changed: {timestamp}\t{value}\t{dateinfo}")
+    f.write(f"{timestamp}\t{value}\t{dateinfo}")
     f.write("\n")
     f.flush()
 
