@@ -8,6 +8,11 @@ Things to do with a new Raspberry Pi to get this to work:
 * `sudo journalctl -u led.service` to see the services logs
 * Install requirements as root (TODO: set this up as an env)
 * setup emails cred in the appropriate files (see led.py for file names)
+* set up conf file:
+* `sudo ln -s /home/pi/code/led.conf /etc/rsyslog.d/led.conf`
+* `sudo systemctl restart rsyslog`
+
+
 
 Next things to do:
 * More readable model output.  It's hard to interpret the bins.

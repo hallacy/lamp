@@ -1,8 +1,12 @@
 [Unit]
 Description=Lamp service
+After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 /home/pi/code/led.py --on_lamp=True 
+ExecStart=/usr/bin/python3 /home/pi/code/led.py --on_lamp=True --debug
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=led
 Restart=on-abort
 
 [Install]
