@@ -1,17 +1,28 @@
 # imports
 import datetime
 import random
+import smtplib
 import time
+import traceback
 
 import dropbox
 import fire
+import RPi.GPIO as GPIO
 from dropbox.files import WriteMode
 
 DEFAULT_SAVE_LOCATION = "/home/pi/code/state.txt"
 
-DEFAULT_TOKEN_LOCATION = "/home/pi/.dropbox_token"
 
+# DROPBOX
+DEFAULT_TOKEN_LOCATION = "/home/pi/.dropbox_token"
 TOKEN = open(DEFAULT_TOKEN_LOCATION, "r").read().strip()
+
+# Email Variables
+SMTP_SERVER = "smtp.gmail.com"  # Email Server (don't change!)
+SMTP_PORT = 587  # Server Port (don't change!)
+GMAIL_USERNAME = open("/home/pi/.gmail_username", "r").read().strip()
+GMAIL_PASSWORD = open("/home/pi/.gmail_password", "r").read().strip()
+RECEIVER_EMAIL = open("/home/pi/.reciever_email", "r").read().strip()
 
 
 def save_to_backup(local_path, dropbox_path):
@@ -31,6 +42,33 @@ def read_state_file_into_array(state_file):
         [float(line.split("\t")[0]), int(line.split("\t")[1]), line.split("\t")[2]]
         for line in lines
     ]
+
+
+class Emailer:
+    def sendmail(self, recipient, subject, content):
+
+        # Create Headers
+        headers = [
+            "From: " + GMAIL_USERNAME,
+            "Subject: " + subject,
+            "To: " + recipient,
+            "MIME-Version: 1.0",
+            "Content-Type: text/html",
+        ]
+        headers = "\r\n".join(headers)
+
+        # Connect to Gmail Server
+        session = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        session.ehlo()
+        session.starttls()
+        session.ehlo()
+
+        # Login to Gmail
+        session.login(GMAIL_USERNAME, GMAIL_PASSWORD)
+
+        # Send Email & Exit
+        session.sendmail(GMAIL_USERNAME, recipient, headers + "\r\n\r\n" + content)
+        session.quit
 
 
 class LampModel:
@@ -84,11 +122,11 @@ class AverageOverLastXDays(LampModel):
 
             # Starting from the current time, walk through the bins.
             while timestamp > cur_time:
-                if self.debug:
-                    print(
-                        f"Cur time is: {time_to_human(cur_time)}.  Iterating to {additional_data}. Setting to {cur_value}"
-                    )
-                    time.sleep(0.1)
+                # if self.debug:
+                #     print(
+                #         f"Cur time is: {time_to_human(cur_time)}.  Iterating to {additional_data}. Setting to {cur_value}"
+                #     )
+                #     time.sleep(0.1)
 
                 bins[(cur_time // (self.interval_in_minutes * 60)) % len(bins)].append(
                     cur_value
@@ -101,11 +139,11 @@ class AverageOverLastXDays(LampModel):
 
         # If we've iterated through the data and there's still time before the present:
         while cur_time < now_time:
-            if self.debug:
-                print(
-                    f"Cur time is: {time_to_human(cur_time)}.  Iterating to {time_to_human(now_time)}. Setting to {cur_value}"
-                )
-                time.sleep(0.1)
+            # if self.debug:
+            #     print(
+            #         f"Cur time is: {time_to_human(cur_time)}.  Iterating to {time_to_human(now_time)}. Setting to {cur_value}"
+            #     )
+            #     time.sleep(0.1)
 
             bins[(cur_time // (self.interval_in_minutes * 60)) % len(bins)].append(
                 cur_value
@@ -146,10 +184,10 @@ class SwitchStateTracker:
             self.window.pop(0)
             average = sum(self.window) / len(self.window)
 
-            if self.debug and self.debug_counter % self.debug_printer == 0:
-                self.debug_counter = 0
-                print(f"WINDOW: {self.window}")
-                print(f"AVERAGE: {average}")
+            # if self.debug and self.debug_counter % self.debug_printer == 0:
+            #     self.debug_counter = 0
+            #     print(f"WINDOW: {self.window}")
+            #     print(f"AVERAGE: {average}")
 
             self.state = 1 if average >= self.threshold else 0
 
@@ -166,8 +204,6 @@ class LED:
         self.debug = debug
 
         if on_lamp:
-            import RPi.GPIO as GPIO
-
             GPIO.setup(led_pin, GPIO.OUT)
             GPIO.output(led_pin, GPIO.LOW)
 
@@ -200,6 +236,33 @@ def write_to_log(f, timestamp, value):
     f.flush()
 
 
+def sos_mode(exception, led):
+    try:
+        # Send an email to me
+        print("Sending email")
+        sender = Emailer()
+
+        sendTo = RECEIVER_EMAIL
+        emailSubject = f"SOS Mode on Lamp at {datetime.datetime.isoformat(datetime.datetime.now())} EOM"
+        emailContent = traceback.format_exc()
+
+        sender.sendmail(sendTo, emailSubject, emailContent)
+    except Exception as e:
+        print(e)
+
+    # Repeat SOS led pattern
+    print("SOS led pattern active")
+    try:
+        while True:
+            led.update_led_state(100)
+            time.sleep(0.5)
+            led.update_led_state(0)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        led.stop()
+        GPIO.cleanup()
+
+
 def main(
     on_lamp=True,
     buf_length=100,
@@ -210,12 +273,12 @@ def main(
     cur_state=None,
     threshold=0.75,
     test_mode=False,
-    save_to_backup_every=1e6,
+    save_to_backup_every=1e7,
     state_file=DEFAULT_SAVE_LOCATION,
     load_from_backup=True,
     led_freq=100,
     test_threshold=0.6,
-    train_every=10000,
+    train_every=1e6,
 ):
 
     # GPIO pins
@@ -224,7 +287,6 @@ def main(
 
     # Set up the board
     if on_lamp:
-        import RPi.GPIO as GPIO
 
         # setup GPIO
         GPIO.setmode(GPIO.BCM)
@@ -245,74 +307,78 @@ def main(
 
     lamp_model.train(read_state_file_into_array(state_file))
 
-    # I think we might want to do this by day instead of forever longer, but this will work for now
-    with open(state_file, "a") as f:
+    try:
+        with open(state_file, "a") as f:
+            # main loop
+            try:
+                while True:
+                    start_time = time.time()
+                    counter += 1
 
-        # main loop
-        try:
-            while True:
-                start_time = time.time()
-                counter += 1
+                    cur_val = get_switch_state()
+                    tracker.update(cur_val)
 
-                cur_val = get_switch_state()
-                tracker.update(cur_val)
-
-                if test_mode:
-                    average = tracker.get_average()
-                    debugged_cur_val = tracker.get_state()
-                    # Normalize below X to be 0 and 1 to be 1
-                    led_value = min(
-                        max(
-                            (average - test_threshold) * (1 / (1 - threshold)) * 100, 0
-                        ),
-                        100,
-                    )
-                    led.update_led_state(led_value)
-
-                    if debugged_cur_val == 1 and cur_state == 0:
-                        print("SWITCH ON")
-                        cur_state = debugged_cur_val
-                    elif debugged_cur_val == 0 and cur_state == 1:
-                        print("SWITCH OFF")
-                        cur_state = debugged_cur_val
-                else:
-                    debugged_cur_val = tracker.get_state()
-
-                    # Update LED based on timestamp
-                    led.update_led_state(lamp_model.get_model_output(time.time()))
-
-                    if debugged_cur_val == 1 and cur_state == 0:
-                        print("SWITCH ON")
-                        cur_state = debugged_cur_val
-                        write_to_log(f, start_time, debugged_cur_val)
-                    elif debugged_cur_val == 0 and cur_state == 1:
-                        print("SWITCH OFF")
-                        cur_state = debugged_cur_val
-                        write_to_log(f, start_time, debugged_cur_val)
-                    elif cur_state is None:
-                        cur_state = debugged_cur_val
-                        write_to_log(f, start_time, debugged_cur_val)
-
-                    # Training
-                    if counter % train_every == 0:
-                        print("Training")
-                        lamp_model.train(read_state_file_into_array(state_file))
-
-                    # Backup
-                    if counter % save_to_backup_every == 0:
-                        # Drop box notes that long lasting tokens might get deprecated in the future
-                        save_to_backup(
-                            state_file, f"/lamp_state_{int(time.time())}.txt"
+                    if test_mode:
+                        average = tracker.get_average()
+                        debugged_cur_val = tracker.get_state()
+                        # Normalize below X to be 0 and 1 to be 1
+                        led_value = min(
+                            max(
+                                (average - test_threshold)
+                                * (1 / (1 - threshold))
+                                * 100,
+                                0,
+                            ),
+                            100,
                         )
+                        led.update_led_state(led_value)
 
-                time_delta = time.time() - start_time
-                if time_delta < loop_time:
-                    time.sleep(loop_time - time_delta)
-        except KeyboardInterrupt:
-            print("Keyboard interrupt")
-            save_to_backup(state_file, f"/lamp_state_{int(time.time())}.txt")
-            led.stop()
-            GPIO.cleanup()
+                        if debugged_cur_val == 1 and cur_state == 0:
+                            print("SWITCH ON")
+                            cur_state = debugged_cur_val
+                        elif debugged_cur_val == 0 and cur_state == 1:
+                            print("SWITCH OFF")
+                            cur_state = debugged_cur_val
+                    else:
+                        debugged_cur_val = tracker.get_state()
+
+                        # Update LED based on timestamp
+                        led.update_led_state(lamp_model.get_model_output(time.time()))
+
+                        if debugged_cur_val == 1 and cur_state == 0:
+                            print("SWITCH ON")
+                            cur_state = debugged_cur_val
+                            write_to_log(f, start_time, debugged_cur_val)
+                        elif debugged_cur_val == 0 and cur_state == 1:
+                            print("SWITCH OFF")
+                            cur_state = debugged_cur_val
+                            write_to_log(f, start_time, debugged_cur_val)
+                        elif cur_state is None:
+                            cur_state = debugged_cur_val
+                            write_to_log(f, start_time, debugged_cur_val)
+
+                        # Training
+                        if counter % train_every == 0:
+                            print("Training")
+                            lamp_model.train(read_state_file_into_array(state_file))
+
+                        # Backup
+                        if counter % save_to_backup_every == 0:
+                            # Drop box notes that long lasting tokens might get deprecated in the future
+                            save_to_backup(
+                                state_file, f"/lamp_state_{int(time.time())}.txt"
+                            )
+
+                    time_delta = time.time() - start_time
+                    if time_delta < loop_time:
+                        time.sleep(loop_time - time_delta)
+            except KeyboardInterrupt:
+                print("Keyboard interrupt")
+                save_to_backup(state_file, f"/lamp_state_{int(time.time())}.txt")
+                led.stop()
+                GPIO.cleanup()
+    except Exception as e:
+        sos_mode(e, led)
 
 
 if __name__ == "__main__":
