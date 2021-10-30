@@ -2,6 +2,7 @@
 import datetime
 import random
 import time
+from time import localtime, strftime
 
 import dropbox
 import fire
@@ -23,14 +24,10 @@ def save_to_backup(local_path, dropbox_path):
             dbx.files_upload(f.read(), dropbox_path, mode=WriteMode("overwrite"))
 
 
-def load_from_backup():
-    pass
-
-
 def read_state_file_into_array(state_file):
     with open(state_file, "r") as f:
         lines = f.readlines()
-    # Split each line on tab. The first field is a string, the second is an int
+    # Split each line on tab. The first field is a float, the second is an int
     return [[float(line.split("\t")[0]), int(line.split("\t")[1])] for line in lines]
 
 
@@ -88,8 +85,7 @@ class AverageOverLastXDays(LampModel):
             timestamp, value = d
             # Starting from the current time, walk through the bins.
             while (next_timestamp is None and cur_time < now_time) or (
-                next_timestamp is not None
-                and next_timestamp > cur_time + self.interval_in_minutes * 60
+                next_timestamp is not None and next_timestamp > cur_time
             ):
                 bins[(cur_time // (self.interval_in_minutes * 60)) % len(bins)].append(
                     value
@@ -172,6 +168,15 @@ class LED:
         self.p.stop()
 
 
+def write_to_log(f, timestamp, value):
+    print(
+        f"Light Changed: {timestamp}\t{value}\t{strftime('%a, %d %b %Y %H:%M:%S', localtime())}"
+    )
+    f.write(f"{timestamp}\t{value}\t{strftime('%a, %d %b %Y %H:%M:%S', localtime())}")
+    f.write("\n")
+    f.flush()
+
+
 def main(
     on_lamp=True,
     buf_length=100,
@@ -179,7 +184,7 @@ def main(
     counter=0,
     debug=False,
     loop_time=0.01,
-    cur_state=False,
+    cur_state=None,
     threshold=0.75,
     test_mode=False,
     save_to_backup_every=1e6,
@@ -187,7 +192,7 @@ def main(
     load_from_backup=True,
     led_freq=100,
     test_threshold=0.6,
-    train_every=100,
+    train_every=10000,
 ):
 
     # GPIO pins
@@ -217,11 +222,6 @@ def main(
 
     lamp_model.train(read_state_file_into_array(state_file))
 
-    # Setup file that we're logging transitions to
-    # Load from backup if it doesn't exist
-    # if load_from_backup:
-    #    load_from_backup()
-
     # I think we might want to do this by day instead of forever longer, but this will work for now
     with open(state_file, "a") as f:
 
@@ -246,36 +246,38 @@ def main(
                     )
                     led.update_led_state(led_value)
 
-                    if debugged_cur_val == 1 and cur_state is False:
+                    if debugged_cur_val == 1 and cur_state == 0:
                         print("SWITCH ON")
-                        cur_state = True
-                    elif debugged_cur_val == 0 and cur_state is True:
+                        cur_state = debugged_cur_val
+                    elif debugged_cur_val == 0 and cur_state == 1:
                         print("SWITCH OFF")
-                        cur_state = False
+                        cur_state = debugged_cur_val
                 else:
                     debugged_cur_val = tracker.get_state()
 
                     # Update LED based on timestamp
                     led.update_led_state(lamp_model.get_model_output(time.time()))
 
-                    if debugged_cur_val == 1 and cur_state is False:
+                    if debugged_cur_val == 1 and cur_state == 0:
                         print("SWITCH ON")
-                        cur_state = True
-                        # Use a lib
-                        f.write(f"{start_time}\t{debugged_cur_val}")
-                        f.write("\n")
-                        f.flush()
-                    elif debugged_cur_val == 0 and cur_state is True:
+                        cur_state = debugged_cur_val
+                        write_to_log(f, start_time, debugged_cur_val)
+                    elif debugged_cur_val == 0 and cur_state == 1:
                         print("SWITCH OFF")
-                        cur_state = False
-                        # Use a lib
-                        f.write(f"{start_time}\t{debugged_cur_val}")
-                        f.write("\n")
-                        f.flush()
+                        cur_state = debugged_cur_val
+                        write_to_log(f, start_time, debugged_cur_val)
+                    elif cur_state is None:
+                        cur_state = debugged_cur_val
+                        write_to_log(f, start_time, debugged_cur_val)
+
+                    # Training
                     if counter % train_every == 0:
                         print("Training")
                         lamp_model.train(read_state_file_into_array(state_file))
+
+                    # Backup
                     if counter % save_to_backup_every == 0:
+                        # Drop box notes that long lasting tokens might get deprecated in the future
                         save_to_backup(
                             state_file, f"/lamp_state_{int(time.time())}.txt"
                         )
