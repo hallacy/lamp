@@ -27,7 +27,10 @@ def read_state_file_into_array(state_file):
     with open(state_file, "r") as f:
         lines = f.readlines()
     # Split each line on tab. The first field is a float, the second is an int
-    return [[float(line.split("\t")[0]), int(line.split("\t")[1])] for line in lines]
+    return [
+        [float(line.split("\t")[0]), int(line.split("\t")[1]), line.split("\t")[2]]
+        for line in lines
+    ]
 
 
 class LampModel:
@@ -73,28 +76,45 @@ class AverageOverLastXDays(LampModel):
             bins.append([])
 
         cur_time = int(starting_time)
-        # Walk through the data
+        cur_value = 0
+        # Walk through the data, assume sorted
         for i, d in enumerate(data):
-            if i == len(data) - 1:
-                next_d = None
-                next_timestamp = None
-            else:
-                next_d = data[i + 1]
-                next_timestamp = next_d[0]
-            timestamp, value = d
+            timestamp, next_value, additional_data = d
+            additional_data = additional_data.strip()
+
             # Starting from the current time, walk through the bins.
-            while (next_timestamp is None and cur_time < now_time) or (
-                next_timestamp is not None and next_timestamp > cur_time
-            ):
+            while timestamp > cur_time:
+                if self.debug:
+                    print(
+                        f"Cur time is: {time_to_human(cur_time)}.  Iterating to {additional_data}. Setting to {cur_value}"
+                    )
+                    time.sleep(0.1)
+
                 bins[(cur_time // (self.interval_in_minutes * 60)) % len(bins)].append(
-                    value
+                    cur_value
                 )
                 cur_time += self.interval_in_minutes * 60
+            cur_value = next_value
             # TODO(hallacy): implement the case where the light turns on and off
             # multiple times in a single interval
             # For now, assume that a bin that changes always uses the last value
 
+        # If we've iterated through the data and there's still time before the present:
+        while cur_time < now_time:
+            if self.debug:
+                print(
+                    f"Cur time is: {time_to_human(cur_time)}.  Iterating to {time_to_human(now_time)}. Setting to {cur_value}"
+                )
+                time.sleep(0.1)
+
+            bins[(cur_time // (self.interval_in_minutes * 60)) % len(bins)].append(
+                cur_value
+            )
+            cur_time += self.interval_in_minutes * 60
+
         # Calculate the average for each bin
+        if self.debug:
+            print("Model Bins:", bins)
         averages = []
         for bin in bins:
             if len(bin) == 0:
@@ -102,7 +122,7 @@ class AverageOverLastXDays(LampModel):
             else:
                 averages.append(sum(bin) / len(bin))
         if self.debug:
-            print("Model Bins:", averages)
+            print("Model Averages:", averages)
 
         self.model = averages
 
@@ -167,11 +187,13 @@ class LED:
         self.p.stop()
 
 
+def time_to_human(timestamp):
+    return datetime.datetime.fromtimestamp(timestamp).strftime("%A, %d. %B %Y %I:%M%p")
+
+
 def write_to_log(f, timestamp, value):
     # All times are pacific
-    dateinfo = datetime.datetime.fromtimestamp(timestamp).strftime(
-        "%A, %d. %B %Y %I:%M%p"
-    )
+    dateinfo = time_to_human(timestamp)
     print(f"Light Changed: {timestamp}\t{value}\t{dateinfo}")
     f.write(f"{timestamp}\t{value}\t{dateinfo}")
     f.write("\n")
