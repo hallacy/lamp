@@ -1,0 +1,9 @@
+[Unit]
+Description=Lamp service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/code/led.py --state_file=/home/pi/code/state.txt  --on_lamp=True --test_mode 
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target

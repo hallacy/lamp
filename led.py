@@ -4,9 +4,6 @@ import time
 
 import fire
 
-# from pydrive.auth import GoogleAuth
-# from pydrive.drive import GoogleDrive
-
 DEFAULT_SAVE_LOCATION = "/Users/hallacy/lamp_state.txt"
 
 
@@ -70,6 +67,29 @@ class SwitchStateTracker:
         return self.state
 
 
+class LED:
+    def __init__(self, led_pin, led_freq, on_lamp, debug=False):
+        self.cur_led_value = 0
+        self.debug = debug
+
+        if on_lamp:
+            import RPi.GPIO as GPIO
+
+            GPIO.setup(led_pin, GPIO.OUT)
+
+            self.p = GPIO.PWM(led_pin, led_freq)
+            self.p.start(0)
+
+    def update_led_state(self, new_value):
+
+        if new_value != self.cur_led_value:
+            if self.debug:
+                print(f"LED: {new_value}")
+
+            self.p.ChangeDutyCycle(new_value)
+            self.cur_led_value = new_value
+
+
 def main(
     on_lamp=True,
     buf_length=100,
@@ -87,6 +107,10 @@ def main(
     test_threshold=0.6,
 ):
 
+    # GPIO pins
+    LED_PIN = 18
+    SWITCH_PIN = 25
+
     # Set up the board
     if on_lamp:
         import RPi.GPIO as GPIO
@@ -95,19 +119,9 @@ def main(
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
-        # GPIO pins
-        LED_PIN = 18
-        SWITCH_PIN = 25
-
         # setup
-        GPIO.setup(LED_PIN, GPIO.OUT)
         GPIO.setup(SWITCH_PIN, GPIO.IN)
-        p = GPIO.PWM(LED_PIN, led_freq)
-        p.start(0)
-
-    def update_led_state(led_value):
-        if on_lamp:
-            p.ChangeDutyCycle(led_value)
+    led = LED(LED_PIN, led_freq, on_lamp, debug=allow_debug)
 
     def get_switch_state():
         if on_lamp:
@@ -141,7 +155,7 @@ def main(
                     max((average - test_threshold) * (1 / (1 - threshold)) * 100, 0),
                     100,
                 )
-                update_led_state(led_value)
+                led.update_led_state(led_value)
 
                 if debugged_cur_val == 1 and cur_state is False:
                     print("SWITCH ON")
