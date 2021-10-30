@@ -1,0 +1,1 @@
+rsync -avz * pi:/home/pi/code
