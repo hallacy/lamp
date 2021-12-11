@@ -39,7 +39,7 @@ def read_state_file_into_array(state_file):
         lines = f.readlines()
     # Split each line on tab. The first field is a float, the second is an int
     return [
-        [float(line.split("\t")[0]), int(line.split("\t")[1]), line.split("\t")[2]]
+        [float(line.split("\t")[0]), float(line.split("\t")[1]), line.split("\t")[2]]
         for line in lines
     ]
 
@@ -165,39 +165,6 @@ class AverageOverLastXDays(LampModel):
         self.model = averages
 
 
-class SwitchStateTracker:
-    def __init__(self, buf_length, threshold, debug, debug_printer):
-        self.window = []
-        self.buf_length = buf_length
-        self.state = 0
-        self.threshold = threshold
-        self.debug = debug
-        self.debug_counter = 0
-        self.debug_printer = debug_printer
-
-    # Feels like there's a race condition in here somewhere.  Probably should lock it
-    def update(self, new_value):
-        self.debug_counter += 1
-        self.window.append(new_value)
-
-        if len(self.window) > self.buf_length:
-            self.window.pop(0)
-            average = sum(self.window) / len(self.window)
-
-            # if self.debug and self.debug_counter % self.debug_printer == 0:
-            #     self.debug_counter = 0
-            #     print(f"WINDOW: {self.window}")
-            #     print(f"AVERAGE: {average}")
-
-            self.state = 1 if average >= self.threshold else 0
-
-    def get_average(self):
-        return sum(self.window) / len(self.window)
-
-    def get_state(self):
-        return self.state
-
-
 class LED:
     def __init__(self, led_pin, led_freq, on_lamp, debug=False):
         self.cur_led_value = 0
@@ -293,7 +260,7 @@ def main(
         GPIO.setwarnings(True)
 
         # setup
-        GPIO.setup(SWITCH_PIN, GPIO.IN)
+        GPIO.setup(SWITCH_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
     led = LED(LED_PIN, led_freq, on_lamp, debug=debug)
 
     def get_switch_state():
@@ -302,7 +269,6 @@ def main(
         else:
             return random.random()
 
-    tracker = SwitchStateTracker(buf_length, threshold, debug, debug_printer)
     lamp_model = AverageOverLastXDays(days=7, interval_in_minutes=10, debug=debug)
 
     lamp_model.train(read_state_file_into_array(state_file))
@@ -316,46 +282,32 @@ def main(
                     counter += 1
 
                     cur_val = get_switch_state()
-                    tracker.update(cur_val)
 
                     if test_mode:
-                        average = tracker.get_average()
-                        debugged_cur_val = tracker.get_state()
-                        # Normalize below X to be 0 and 1 to be 1
-                        led_value = min(
-                            max(
-                                (average - test_threshold)
-                                * (1 / (1 - threshold))
-                                * 100,
-                                0,
-                            ),
-                            100,
-                        )
-                        led.update_led_state(led_value)
+                        led.update_led_state(cur_val * 100)
 
-                        if debugged_cur_val == 1 and cur_state == 0:
+                        if cur_val > 0.5 and cur_state == 0:
                             print("SWITCH ON")
-                            cur_state = debugged_cur_val
-                        elif debugged_cur_val == 0 and cur_state == 1:
+                            cur_state = cur_val
+                        elif cur_val < 0.5 and cur_state == 1:
                             print("SWITCH OFF")
-                            cur_state = debugged_cur_val
+                            cur_state = cur_val
                     else:
-                        debugged_cur_val = tracker.get_state()
 
                         # Update LED based on timestamp
                         led.update_led_state(lamp_model.get_model_output(time.time()))
 
-                        if debugged_cur_val == 1 and cur_state == 0:
+                        if cur_val == 1 and cur_state == 0:
                             print("SWITCH ON")
-                            cur_state = debugged_cur_val
-                            write_to_log(f, start_time, debugged_cur_val)
-                        elif debugged_cur_val == 0 and cur_state == 1:
+                            cur_state = cur_val
+                            write_to_log(f, start_time, cur_val)
+                        elif cur_val == 0 and cur_state == 1:
                             print("SWITCH OFF")
-                            cur_state = debugged_cur_val
-                            write_to_log(f, start_time, debugged_cur_val)
+                            cur_state = cur_val
+                            write_to_log(f, start_time, cur_val)
                         elif cur_state is None:
-                            cur_state = debugged_cur_val
-                            write_to_log(f, start_time, debugged_cur_val)
+                            cur_state = cur_val
+                            write_to_log(f, start_time, cur_val)
 
                         # Training
                         if counter % train_every == 0:
@@ -374,11 +326,13 @@ def main(
                         time.sleep(loop_time - time_delta)
             except KeyboardInterrupt:
                 print("Keyboard interrupt")
-                save_to_backup(state_file, f"/lamp_state_{int(time.time())}.txt")
-                led.stop()
-                GPIO.cleanup()
     except Exception as e:
         sos_mode(e, led)
+    finally:
+        print("Cleaning up")
+        save_to_backup(state_file, f"/lamp_state_{int(time.time())}.txt")
+        led.stop()
+        GPIO.cleanup()
 
 
 if __name__ == "__main__":
