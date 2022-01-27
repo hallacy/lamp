@@ -238,13 +238,10 @@ def main(
     debug=False,
     loop_time=0.01,
     cur_state=None,
-    threshold=0.75,
     test_mode=False,
     save_to_backup_every=1e7,
     state_file=DEFAULT_SAVE_LOCATION,
-    load_from_backup=True,
     led_freq=100,
-    test_threshold=0.6,
     train_every=1e6,
 ):
 
@@ -265,13 +262,17 @@ def main(
 
     def get_switch_state():
         if on_lamp:
-            return float(GPIO.input(SWITCH_PIN))
+            led_value = float(GPIO.input(SWITCH_PIN))
+            # if debug:
+            #     print(f"LED VALUE: {led_value}")
+            return led_value
         else:
             return random.random()
 
-    lamp_model = AverageOverLastXDays(days=7, interval_in_minutes=10, debug=debug)
+    if not test_mode:
+        lamp_model = AverageOverLastXDays(days=7, interval_in_minutes=10, debug=debug)
 
-    lamp_model.train(read_state_file_into_array(state_file))
+        lamp_model.train(read_state_file_into_array(state_file))
 
     try:
         with open(state_file, "a") as f:
@@ -284,31 +285,19 @@ def main(
                     cur_val = get_switch_state()
 
                     if test_mode:
-                        led.update_led_state(cur_val * 100)
-
-                        if cur_val > 0.5 and cur_state == 0:
-                            print("SWITCH ON")
-                            cur_state = cur_val
-                        elif cur_val < 0.5 and cur_state == 1:
-                            print("SWITCH OFF")
-                            cur_state = cur_val
+                        led_new_val = cur_val * 100
                     else:
-
                         # Update LED based on timestamp
-                        led.update_led_state(lamp_model.get_model_output(time.time()))
+                        led_new_val = lamp_model.get_model_output(time.time())
 
-                        if cur_val == 1 and cur_state == 0:
-                            print("SWITCH ON")
-                            cur_state = cur_val
-                            write_to_log(f, start_time, cur_val)
-                        elif cur_val == 0 and cur_state == 1:
-                            print("SWITCH OFF")
-                            cur_state = cur_val
-                            write_to_log(f, start_time, cur_val)
-                        elif cur_state is None:
-                            cur_state = cur_val
+                    led.update_led_state(led_new_val)
+                    if cur_state is None or cur_state != cur_val:
+                        print(f"State Change: {cur_state} -> {cur_val}")
+                        cur_state = cur_val
+                        if not test_mode:
                             write_to_log(f, start_time, cur_val)
 
+                    if not test_mode:
                         # Training
                         if counter % train_every == 0:
                             print("Training")
@@ -330,7 +319,8 @@ def main(
         sos_mode(e, led)
     finally:
         print("Cleaning up")
-        save_to_backup(state_file, f"/lamp_state_{int(time.time())}.txt")
+        if not test_mode:
+            save_to_backup(state_file, f"/lamp_state_{int(time.time())}.txt")
         led.stop()
         GPIO.cleanup()
 
